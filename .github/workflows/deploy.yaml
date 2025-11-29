@@ -54,6 +54,9 @@ jobs:
           # Push the image to Artifact Registry
           docker push ${IMAGE_NAME}
 
+          # Export image as GitHub Action output
+          echo "image_name=${IMAGE_NAME}" >> "$GITHUB_OUTPUT"          
+
       # --- 4. Deploy to Cloud Run ---
       - name: Deploy to Cloud Run
         id: deploy
