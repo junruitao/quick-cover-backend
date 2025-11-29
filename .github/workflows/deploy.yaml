@@ -6,9 +6,9 @@ on:
       - main
 
 env:
-  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  PROJECT_ID: cover-letter-generator-479710
   SERVICE_NAME: cover-letter-generator
-  REGION: us-central1 # Change to your preferred region
+  REGION: australia-southeast1 # Change to your preferred region
 
 jobs:
   deploy:
