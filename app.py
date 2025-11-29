@@ -1,0 +1,204 @@
+import os
+import time
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, Field
+from bs4 import BeautifulSoup
+
+# Import necessary Gemini components
+from google import genai
+from google.genai import types
+
+# Import cloudscraper instead of requests for robust fetching
+import cloudscraper
+from requests.exceptions import RequestException, HTTPError
+
+# --- Configuration and Initialization ---
+
+# Initialize FastAPI app
+app = FastAPI(
+    title="Cover Letter Generator",
+    description="Generates a tailored cover letter using Gemini, based on a resume URL and a job description URL."
+)
+
+# Fetch API Key from environment variable
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+
+if not GEMINI_API_KEY:
+    # This is fine for local development but must be set in Cloud Run/GitHub Actions secrets
+    print("Warning: GEMINI_API_KEY not set. Gemini API calls will fail.")
+
+# Initialize Gemini Client (it uses the GEMINI_API_KEY environment variable if set)
+try:
+    client = genai.Client(api_key=GEMINI_API_KEY)
+except Exception as e:
+    # Client initialization might fail if key is missing/invalid, handle gracefully
+    client = None
+    print(f"Error initializing Gemini client: {e}")
+
+# Data model for the incoming request
+class GenerationRequest(BaseModel):
+    resume_url: str = Field(..., description="URL pointing to the user's resume (text, PDF, or DOC).")
+    job_description_url: str = Field(..., description="URL pointing to the job description (HTML page).")
+    word_count: int = Field(300, description="The target word count for the generated cover letter.", ge=50, le=1000)
+
+# --- Core Utility Functions ---
+
+def fetch_url_content(url: str, max_retries: int = 3) -> str:
+    """
+    Robustly fetches content from a given URL using cloudscraper to bypass anti-bot protection.
+    """
+    # Create the cloudscraper session (handles headers and anti-bot challenge)
+    scraper = cloudscraper.create_scraper() 
+
+    # We remove the detailed headers dictionary as cloudscraper handles them
+    # and typically needs to manage the User-Agent itself during the challenge phase.
+
+    for attempt in range(max_retries):
+        try:
+            # Set a timeout to prevent hanging requests
+            # Use scraper.get() instead of requests.get()
+            response = scraper.get(url, timeout=15)
+            response.raise_for_status()  # Raise an exception for bad status codes (4xx or 5xx)
+            
+            content_type = response.headers.get('Content-Type', '').lower()
+
+            if 'text/html' in content_type:
+                # Use BeautifulSoup to clean and extract readable text from HTML
+                return extract_text_from_html(response.text)
+            
+            # For other text-based files, return the content
+            return response.text
+
+        except HTTPError as http_err:
+            status_code = response.status_code if 'response' in locals() else 500
+            if status_code in [403, 404]:
+                error_detail = f"Request failed (Status {status_code}). Attempting retry {attempt + 1}/{max_retries}..."
+            else:
+                error_detail = f"HTTP Error {status_code}: {http_err}"
+            
+            print(error_detail)
+            if attempt < max_retries - 1:
+                time.sleep(2 ** attempt) # Exponential backoff
+            else:
+                # If all retries fail, raise the final error
+                raise HTTPException(status_code=status_code, detail=f"Failed to fetch content from URL: {url} after {max_retries} attempts. Last error: {error_detail}")
+
+        except RequestException as e:
+            # Handle non-HTTP errors like connection issues or timeouts
+            print(f"Attempt {attempt + 1} failed for {url} due to connection error: {e}")
+            if attempt < max_retries - 1:
+                time.sleep(2 ** attempt) # Exponential backoff
+            else:
+                raise HTTPException(status_code=400, detail=f"Failed to connect to URL: {url} after {max_retries} attempts. Error: {e}")
+
+    
+    # This line should ideally not be reached
+    raise HTTPException(status_code=400, detail=f"Failed to fetch content from URL after {max_retries} attempts: {url}")
+
+
+def extract_text_from_html(html_content: str) -> str:
+    """
+    Uses BeautifulSoup to parse HTML and extract the main, readable text, 
+    stripping out scripts, styles, and extra whitespace.
+    """
+    soup = BeautifulSoup(html_content, 'html.parser')
+    
+    # Remove script, style, and other tags that don't contain meaningful text
+    for script_or_style in soup(['script', 'style', 'header', 'footer', 'nav', 'form', 'aside']):
+        script_or_style.decompose()
+
+    # Get text
+    text = soup.get_text()
+    
+    # Break into lines and remove leading/trailing space on each
+    lines = (line.strip() for line in text.splitlines())
+    # Break multiple lines into paragraphs
+    chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+    # Drop blank lines
+    text = '\n'.join(chunk for chunk in chunks if chunk)
+    
+    return text
+
+# --- API Endpoints ---
+
+@app.get("/")
+def read_root():
+    """Simple health check endpoint."""
+    return {"message": "Cover Letter Generator Service is Running. POST to /generate."}
+
+
+@app.post("/generate")
+async def generate_cover_letter(request: GenerationRequest):
+    """
+    Fetches resume and job description content and asks Gemini to generate a tailored cover letter.
+    """
+    if not client:
+        raise HTTPException(status_code=500, detail="Gemini API Client is not initialized. Check GEMINI_API_KEY environment variable.")
+
+    # 1. Fetch Resume Content
+    try:
+        # NOTE: For simplicity, we treat the resume content as raw text.
+        resume_content = fetch_url_content(request.resume_url)
+    except HTTPException as e:
+        raise HTTPException(status_code=400, detail=f"Resume URL Error: {e.detail}")
+
+    # 2. Fetch Job Description Content (Fixed with cloudscraper)
+    try:
+        # This will use the robust fetching and HTML cleaning logic
+        job_description_content = fetch_url_content(request.job_description_url)
+    except HTTPException as e:
+        raise HTTPException(status_code=400, detail=f"Job Description URL Error: {e.detail}")
+
+    # 3. Construct the Prompt for Gemini
+    system_prompt = (
+        "You are a professional career coach and expert cover letter writer. "
+        "Your task is to generate a highly tailored, persuasive cover letter based on the user's resume and a specific job description. "
+        "The letter must not exceed the specified word count."
+    )
+    
+    user_prompt = f"""
+    Generate a professional cover letter.
+    
+    --- CONSTRAINTS ---
+    1. The cover letter must be professional and highly customized.
+    2. The word count must be approximately {request.word_count} words.
+    3. The tone should be enthusiastic and confident.
+    4. Start with a standard business salutation (e.g., "Dear Hiring Manager,").
+    
+    --- INPUT DATA ---
+    
+    [JOB DESCRIPTION]
+    {job_description_content}
+    
+    [RESUME SUMMARY (Key Skills/Experience)]
+    {resume_content}
+    """
+
+    # 4. Call the Gemini API
+    try:
+        print("Sending request to Gemini...")
+        
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=user_prompt,
+            config=types.GenerateContentConfig(
+                system_instruction=system_prompt,
+                temperature=0.7,
+            ),
+        )
+
+        cover_letter = response.text
+        
+        if not cover_letter:
+            raise Exception("Gemini returned an empty response.")
+        
+        return {
+            "status": "success",
+            "cover_letter": cover_letter,
+            "word_count_request": request.word_count,
+            "job_description_url": request.job_description_url
+        }
+
+    except Exception as e:
+        print(f"Gemini API Error: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate cover letter with Gemini API. Error: {e}")

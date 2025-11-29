@@ -1,0 +1,74 @@
+name: Deploy to Google Cloud Run
+
+on:
+  push:
+    branches:
+      - main
+
+env:
+  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  SERVICE_NAME: cover-letter-generator
+  REGION: us-central1 # Change to your preferred region
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: 'read'
+      id-token: 'write' # Required for Google Cloud authentication
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      # --- 1. Authenticate to Google Cloud ---
+      - id: 'auth'
+        name: 'Authenticate to Google Cloud'
+        uses: 'google-github-actions/auth@v2'
+        with:
+          # Use Workload Identity Federation (Recommended)
+          # Make sure to set up WIF in GCP and grant the GitHub identity access to the SA.
+          # Example of a Workload Identity Provider configuration:
+          # service_account: "github-actions-sa@${{ env.PROJECT_ID }}.iam.gserviceaccount.com"
+          #
+          # OR (simpler but less secure) use a Service Account Key JSON
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      # --- 2. Set up gcloud CLI and enable APIs ---
+      - name: Set up gcloud CLI
+        uses: google-github-actions/setup-gcloud@v2
+
+      # --- 3. Build and Push Container Image ---
+      - name: Build and Push Docker Image
+        id: build-image
+        run: |
+          # Configure Docker to use gcloud as a credential helper
+          gcloud auth configure-docker ${REGION}-docker.pkg.dev
+          
+          # Define the full image name
+          IMAGE_NAME=${REGION}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.SERVICE_NAME }}/app:latest
+          
+          # Build the image
+          docker build -t ${IMAGE_NAME} .
+          
+          # Push the image to Artifact Registry
+          docker push ${IMAGE_NAME}
+
+      # --- 4. Deploy to Cloud Run ---
+      - name: Deploy to Cloud Run
+        id: deploy
+        uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: ${{ env.SERVICE_NAME }}
+          region: ${{ env.REGION }}
+          # Use the image name from the previous step
+          image: ${{ steps.build-image.outputs.image_name }} 
+          # Environment variables for the Cloud Run service
+          env_vars: |
+            GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
+            GEMINI_MODEL=gemini-2.5-flash-preview-09-2025
+          # Allow unauthenticated access (since it's an API endpoint)
+          allow_unauthenticated: true
+
+      - name: Output Service URL
+        run: echo "Cloud Run Service URL: ${{ steps.deploy.outputs.url }}"
