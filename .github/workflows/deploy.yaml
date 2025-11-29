@@ -73,5 +73,11 @@ jobs:
           # Allow unauthenticated access (since it's an API endpoint)
           allow_unauthenticated: true
 
-      # - name: Output Service URL
-      #   run: echo "Cloud Run Service URL: ${{ steps.deploy.outputs.url }}"
+      # FIX: Explicitly set IAM policy to allow unauthenticated access after deployment.
+      - name: Make Service Publicly Accessible (Invoker Role)
+        run: |
+          gcloud run services add-iam-policy-binding ${{ env.SERVICE_NAME }} \
+            --member="allUsers" \
+            --role="roles/run.invoker" \
+            --region="${{ env.REGION }}" \
+            --project="${{ env.PROJECT_ID }}"
