@@ -1,9 +1,10 @@
 import os
 import time
 from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware # Import CORS middleware
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from bs4 import BeautifulSoup
+from starlette.concurrency import run_in_threadpool # NEW IMPORT for async safety
 
 # Import necessary Gemini components
 from google import genai
@@ -23,22 +24,18 @@ app = FastAPI(
 
 # --- CORS Configuration ---
 # NOTE: The origins list should be updated for deployment.
-# We are including common development environments (localhost:3000)
-# and allowing your production deployment URL.
 origins = [
-    "http://localhost:3000",  # Local React development server
-    "http://localhost:8080",  # Common other local ports
-    "https://cover-letter-generator-310631449500.australia-southeast1.run.app" # Your Cloud Run URL (sometimes needed)
-    # If your frontend is deployed to Firebase or another host, add that URL here:
-    # e.g., "https://your-firebase-app-id.web.app" 
+    "http://localhost:3000",
+    "http://localhost:8080",
+    "https://cover-letter-generator-310631449500.australia-southeast1.run.app" 
 ]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,       # List of allowed origins
-    allow_credentials=True,      # Allow cookies/authorization headers
-    allow_methods=["*"],         # Allow all methods (GET, POST, etc.)
-    allow_headers=["*"],         # Allow all headers
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 # --- End CORS Configuration ---
 
@@ -47,14 +44,12 @@ app.add_middleware(
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 if not GEMINI_API_KEY:
-    # This is fine for local development but must be set in Cloud Run/GitHub Actions secrets
     print("Warning: GEMINI_API_KEY not set. Gemini API calls will fail.")
 
 # Initialize Gemini Client (it uses the GEMINI_API_KEY environment variable if set)
 try:
     client = genai.Client(api_key=GEMINI_API_KEY)
 except Exception as e:
-    # Client initialization might fail if key is missing/invalid, handle gracefully
     client = None
     print(f"Error initializing Gemini client: {e}")
 
@@ -160,73 +155,88 @@ async def generate_cover_letter(request: GenerationRequest):
     """
     Fetches resume and job description content and asks Gemini to generate a tailored cover letter.
     """
-    if not client:
-        raise HTTPException(status_code=500, detail="Gemini API Client is not initialized. Check GEMINI_API_KEY environment variable.")
-
-    # 1. Fetch Resume Content
+    # Use a high-level try/except block to catch any unhandled exceptions 
+    # and return a proper HTTP 500 response, preventing Uvicorn tracebacks.
     try:
-        # NOTE: For simplicity, we treat the resume content as raw text.
-        resume_content = fetch_url_content(request.resume_url)
-    except HTTPException as e:
-        raise HTTPException(status_code=400, detail=f"Resume URL Error: {e.detail}")
+        if not client:
+            raise HTTPException(status_code=500, detail="Gemini API Client is not initialized. Check GEMINI_API_KEY environment variable.")
 
-    # 2. Fetch Job Description Content (Fixed with cloudscraper)
-    try:
-        # This will use the robust fetching and HTML cleaning logic
-        job_description_content = fetch_url_content(request.job_description_url)
-    except HTTPException as e:
-        raise HTTPException(status_code=400, detail=f"Job Description URL Error: {e.detail}")
+        # 1. Fetch Resume Content - NOW RUN IN THREADPOOL
+        try:
+            # Explicitly run synchronous I/O in a separate thread
+            resume_content = await run_in_threadpool(fetch_url_content, request.resume_url)
+        except HTTPException as e:
+            raise HTTPException(status_code=400, detail=f"Resume URL Error: {e.detail}")
 
-    # 3. Construct the Prompt for Gemini
-    system_prompt = (
-        "You are a professional career coach and expert cover letter writer. "
-        "Your task is to generate a highly tailored, persuasive cover letter based on the user's resume and a specific job description. "
-        "The letter must not exceed the specified word count."
-    )
-    
-    user_prompt = f"""
-    Generate a professional cover letter.
-    
-    --- CONSTRAINTS ---
-    1. The cover letter must be professional and highly customized.
-    2. The word count must be approximately {request.word_count} words.
-    3. The tone should be enthusiastic and confident.
-    4. Start with a standard business salutation (e.g., "Dear Hiring Manager,").
-    
-    --- INPUT DATA ---
-    
-    [JOB DESCRIPTION]
-    {job_description_content}
-    
-    [RESUME SUMMARY (Key Skills/Experience)]
-    {resume_content}
-    """
+        # 2. Fetch Job Description Content - NOW RUN IN THREADPOOL
+        try:
+            # Explicitly run synchronous I/O in a separate thread
+            job_description_content = await run_in_threadpool(fetch_url_content, request.job_description_url)
+        except HTTPException as e:
+            # Re-raise the exception raised by fetch_url_content (which is already an HTTPException)
+            raise HTTPException(status_code=400, detail=f"Job Description URL Error: {e.detail}")
 
-    # 4. Call the Gemini API
-    try:
-        print("Sending request to Gemini...")
-        
-        response = client.models.generate_content(
-            model='gemini-2.5-flash',
-            contents=user_prompt,
-            config=types.GenerateContentConfig(
-                system_instruction=system_prompt,
-                temperature=0.7,
-            ),
+        # 3. Construct the Prompt for Gemini
+        system_prompt = (
+            "You are a professional career coach and expert cover letter writer. "
+            "Your task is to generate a highly tailored, persuasive cover letter based on the user's resume and a specific job description. "
+            "The letter must not exceed the specified word count."
         )
-
-        cover_letter = response.text
         
-        if not cover_letter:
-            raise Exception("Gemini returned an empty response.")
+        user_prompt = f"""
+        Generate a professional cover letter.
         
-        return {
-            "status": "success",
-            "cover_letter": cover_letter,
-            "word_count_request": request.word_count,
-            "job_description_url": request.job_description_url
-        }
+        --- CONSTRAINTS ---
+        1. The cover letter must be professional and highly customized.
+        2. The word count must be approximately {request.word_count} words.
+        3. The tone should be enthusiastic and confident.
+        4. Start with a standard business salutation (e.g., "Dear Hiring Manager,").
+        
+        --- INPUT DATA ---
+        
+        [JOB DESCRIPTION]
+        {job_description_content}
+        
+        [RESUME SUMMARY (Key Skills/Experience)]
+        {resume_content}
+        """
 
+        # 4. Call the Gemini API - NOW RUN IN THREADPOOL
+        try:
+            print("Sending request to Gemini...")
+            
+            # The client call is synchronous, so run it in a threadpool
+            response = await run_in_threadpool(
+                client.models.generate_content,
+                model='gemini-2.5-flash',
+                contents=user_prompt,
+                config=types.GenerateContentConfig(
+                    system_instruction=system_prompt,
+                    temperature=0.7,
+                ),
+            )
+
+            cover_letter = response.text
+            
+            if not cover_letter:
+                raise Exception("Gemini returned an empty response.")
+            
+            return {
+                "status": "success",
+                "cover_letter": cover_letter,
+                "word_count_request": request.word_count,
+                "job_description_url": request.job_description_url
+            }
+
+        except Exception as e:
+            print(f"Gemini API Error: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to generate cover letter with Gemini API. Error: {e}")
+
+    except HTTPException:
+        # Re-raise explicit HTTP exceptions (like 400s or 500s we raised intentionally)
+        raise
     except Exception as e:
-        print(f"Gemini API Error: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to generate cover letter with Gemini API. Error: {e}")
+        # Catch all other unexpected errors
+        print(f"An unexpected internal server error occurred: {e}")
+        # Return a generic 500 error to the client
+        raise HTTPException(status_code=500, detail=f"An unexpected internal server error occurred: {str(e)}")
