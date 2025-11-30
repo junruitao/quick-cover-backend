@@ -67,6 +67,7 @@ def fetch_url_content(url: str, max_retries: int = 5) -> str:
     Robustly fetches content from a given URL using cloudscraper to bypass anti-bot protection.
     
     Fixed initialization of cloudscraper headers to prevent internal server error.
+    Updated retry logic for longer, randomized delays.
     """
     # Define a robust, common User-Agent to help bypass bot detection
     headers = {
@@ -101,8 +102,9 @@ def fetch_url_content(url: str, max_retries: int = 5) -> str:
             
             print(error_detail)
             if attempt < max_retries - 1 and status_code in [403, 404, 503]:
-                # Exponential backoff with random jitter (1 to 3 seconds) for anti-bot errors
-                sleep_time = (2 ** attempt) + random.uniform(1, 3) 
+                # NEW LOGIC: Use linear backoff with increased random jitter (5 to 10 seconds)
+                # This results in delays of 5-10s, 10-15s, 15-20s, etc., up to 30s.
+                sleep_time = (5 * attempt) + random.uniform(5, 10) 
                 print(f"Applying random sleep: {sleep_time:.2f} seconds.")
                 time.sleep(sleep_time) 
             elif attempt < max_retries - 1:
