@@ -66,20 +66,25 @@ class GenerationRequest(BaseModel):
 
 # --- Core Utility Functions ---
 
-def fetch_url_content(url: str, max_retries: int = 3) -> str:
+def fetch_url_content(url: str, max_retries: int = 5) -> str:
     """
     Robustly fetches content from a given URL using cloudscraper to bypass anti-bot protection.
+    
+    Increased max_retries to 5 and added a robust User-Agent header to mimic browser traffic.
     """
-    # Create the cloudscraper session (handles headers and anti-bot challenge)
-    scraper = cloudscraper.create_scraper() 
-
-    # We remove the detailed headers dictionary as cloudscraper handles them
-    # and typically needs to manage the User-Agent itself during the challenge phase.
+    # Define a robust, common User-Agent to help bypass bot detection
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+    }
+    
+    # Create the cloudscraper session, passing in the realistic headers
+    scraper = cloudscraper.create_scraper(headers=headers) 
 
     for attempt in range(max_retries):
         try:
             # Set a timeout to prevent hanging requests
-            # Use scraper.get() instead of requests.get()
             response = scraper.get(url, timeout=15)
             response.raise_for_status()  # Raise an exception for bad status codes (4xx or 5xx)
             
@@ -94,14 +99,14 @@ def fetch_url_content(url: str, max_retries: int = 3) -> str:
 
         except HTTPError as http_err:
             status_code = response.status_code if 'response' in locals() else 500
-            if status_code in [403, 404]:
-                error_detail = f"Request failed (Status {status_code}). Attempting retry {attempt + 1}/{max_retries}..."
-            else:
-                error_detail = f"HTTP Error {status_code}: {http_err}"
+            error_detail = f"Request failed (Status {status_code}). Attempting retry {attempt + 1}/{max_retries}..."
             
             print(error_detail)
-            if attempt < max_retries - 1:
-                time.sleep(2 ** attempt) # Exponential backoff
+            if attempt < max_retries - 1 and status_code in [403, 404, 503]:
+                time.sleep(2 ** attempt) # Exponential backoff for anti-bot errors
+            elif attempt < max_retries - 1:
+                # Retry for non-anti-bot errors too, but rely on raise_for_status logic
+                 time.sleep(2 ** attempt) 
             else:
                 # If all retries fail, raise the final error
                 raise HTTPException(status_code=status_code, detail=f"Failed to fetch content from URL: {url} after {max_retries} attempts. Last error: {error_detail}")
