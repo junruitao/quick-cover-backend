@@ -1,6 +1,7 @@
 import os
 import time
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware # Import CORS middleware
 from pydantic import BaseModel, Field
 from bs4 import BeautifulSoup
 
@@ -17,8 +18,30 @@ from requests.exceptions import RequestException, HTTPError
 # Initialize FastAPI app
 app = FastAPI(
     title="Cover Letter Generator",
-    description="Generates a tailored cover letter using Gemini, based on a resume URL and a job description URL."
+    description="Generates a tailored cover letter using Gemini, based on a resume URL and a specific job description URL."
 )
+
+# --- CORS Configuration ---
+# NOTE: The origins list should be updated for deployment.
+# We are including common development environments (localhost:3000)
+# and allowing your production deployment URL.
+origins = [
+    "http://localhost:3000",  # Local React development server
+    "http://localhost:8080",  # Common other local ports
+    "https://cover-letter-generator-310631449500.australia-southeast1.run.app" # Your Cloud Run URL (sometimes needed)
+    # If your frontend is deployed to Firebase or another host, add that URL here:
+    # e.g., "https://your-firebase-app-id.web.app" 
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,       # List of allowed origins
+    allow_credentials=True,      # Allow cookies/authorization headers
+    allow_methods=["*"],         # Allow all methods (GET, POST, etc.)
+    allow_headers=["*"],         # Allow all headers
+)
+# --- End CORS Configuration ---
+
 
 # Fetch API Key from environment variable
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
