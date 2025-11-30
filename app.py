@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from bs4 import BeautifulSoup
 from starlette.concurrency import run_in_threadpool 
+from typing import Optional # ADDED: For optional fields
 
 # Import necessary Gemini components
 from google import genai
@@ -57,7 +58,9 @@ except Exception as e:
 # Data model for the incoming request
 class GenerationRequest(BaseModel):
     resume_url: str = Field(..., description="URL pointing to the user's resume (text, PDF, or DOC).")
-    job_description_url: str = Field(..., description="URL pointing to the job description (HTML page).")
+    # UPDATED: Made URL optional and added text field
+    job_description_url: Optional[str] = Field(None, description="Optional URL pointing to the job description (HTML page).")
+    job_description_text: Optional[str] = Field(None, description="Optional text content of the job description.")
     word_count: int = Field(300, description="The target word count for the generated cover letter.", ge=50, le=1000)
 
 # --- Core Utility Functions ---
@@ -168,6 +171,11 @@ async def generate_cover_letter(request: GenerationRequest):
     try:
         if not client:
             raise HTTPException(status_code=500, detail="Gemini API Client is not initialized. Check GEMINI_API_KEY environment variable.")
+        
+        # New validation check: ensure either URL or text is provided for JD
+        if not request.job_description_url and not request.job_description_text:
+             raise HTTPException(status_code=400, detail="Must provide either a Job Description URL or the job description text.")
+
 
         # 1. Fetch Resume Content - NOW RUN IN THREADPOOL
         try:
@@ -176,13 +184,20 @@ async def generate_cover_letter(request: GenerationRequest):
         except HTTPException as e:
             raise HTTPException(status_code=400, detail=f"Resume URL Error: {e.detail}")
 
-        # 2. Fetch Job Description Content - NOW RUN IN THREADPOOL
-        try:
-            # Explicitly run synchronous I/O in a separate thread
-            job_description_content = await run_in_threadpool(fetch_url_content, request.job_description_url)
-        except HTTPException as e:
-            # Re-raise the exception raised by fetch_url_content (which is already an HTTPException)
-            raise HTTPException(status_code=400, detail=f"Job Description URL Error: {e.detail}")
+        # 2. Get Job Description Content
+        job_description_content = request.job_description_text
+        
+        if not job_description_content and request.job_description_url:
+            try:
+                # Explicitly run synchronous I/O in a separate thread
+                job_description_content = await run_in_threadpool(fetch_url_content, request.job_description_url)
+            except HTTPException as e:
+                # Re-raise the exception raised by fetch_url_content (which is already an HTTPException)
+                raise HTTPException(status_code=400, detail=f"Job Description URL Error: {e.detail}")
+        
+        if not job_description_content:
+             raise HTTPException(status_code=400, detail="Job Description content is empty after attempting to fetch or using provided text.")
+
 
         # 3. Construct the Prompt for Gemini
         system_prompt = (
