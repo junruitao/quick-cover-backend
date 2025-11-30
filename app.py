@@ -4,7 +4,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from bs4 import BeautifulSoup
-from starlette.concurrency import run_in_threadpool # NEW IMPORT for async safety
+from starlette.concurrency import run_in_threadpool 
 
 # Import necessary Gemini components
 from google import genai
@@ -65,7 +65,7 @@ def fetch_url_content(url: str, max_retries: int = 5) -> str:
     """
     Robustly fetches content from a given URL using cloudscraper to bypass anti-bot protection.
     
-    Increased max_retries to 5 and added a robust User-Agent header to mimic browser traffic.
+    Fixed initialization of cloudscraper headers to prevent internal server error.
     """
     # Define a robust, common User-Agent to help bypass bot detection
     headers = {
@@ -74,8 +74,10 @@ def fetch_url_content(url: str, max_retries: int = 5) -> str:
         'Accept-Language': 'en-US,en;q=0.5',
     }
     
-    # Create the cloudscraper session, passing in the realistic headers
-    scraper = cloudscraper.create_scraper(headers=headers) 
+    # 1. Create the cloudscraper session without passing headers directly
+    scraper = cloudscraper.create_scraper() 
+    # 2. Assign the custom headers after creation (CORRECT METHOD)
+    scraper.headers.update(headers)
 
     for attempt in range(max_retries):
         try:
