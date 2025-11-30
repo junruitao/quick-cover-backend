@@ -1,5 +1,6 @@
 import os
 import time
+import random # ADDED: For randomized retry delays
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -100,7 +101,10 @@ def fetch_url_content(url: str, max_retries: int = 5) -> str:
             
             print(error_detail)
             if attempt < max_retries - 1 and status_code in [403, 404, 503]:
-                time.sleep(2 ** attempt) # Exponential backoff for anti-bot errors
+                # Exponential backoff with random jitter (1 to 3 seconds) for anti-bot errors
+                sleep_time = (2 ** attempt) + random.uniform(1, 3) 
+                print(f"Applying random sleep: {sleep_time:.2f} seconds.")
+                time.sleep(sleep_time) 
             elif attempt < max_retries - 1:
                 # Retry for non-anti-bot errors too, but rely on raise_for_status logic
                  time.sleep(2 ** attempt) 
