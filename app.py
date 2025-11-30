@@ -1,12 +1,12 @@
 import os
 import time
-import random # ADDED: For randomized retry delays
+import random 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from bs4 import BeautifulSoup
 from starlette.concurrency import run_in_threadpool 
-from typing import Optional # ADDED: For optional fields
+from typing import Optional 
 
 # Import necessary Gemini components
 from google import genai
@@ -25,19 +25,16 @@ app = FastAPI(
 )
 
 # --- CORS Configuration ---
-# NOTE: The origins list should be updated for deployment.
-origins = [
-    "http://localhost:3000",
-    "http://localhost:8080",
-    "https://cover-letter-generator-310631449500.australia-southeast1.run.app" 
-]
+# FIX: Changing origins to ["*"] to allow access from all domains, 
+# including GitHub Pages (https://<username>.github.io/<repo-name>).
+origins = ["*"] 
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["*"], # Keep as ["*"] for flexibility
+    allow_headers=["*"], # Keep as ["*"] for flexibility
 )
 # --- End CORS Configuration ---
 
@@ -68,9 +65,6 @@ class GenerationRequest(BaseModel):
 def fetch_url_content(url: str, max_retries: int = 5) -> str:
     """
     Robustly fetches content from a given URL using cloudscraper to bypass anti-bot protection.
-    
-    Fixed initialization of cloudscraper headers to prevent internal server error.
-    Updated retry logic for longer, randomized delays.
     """
     # Define a robust, common User-Agent to help bypass bot detection
     headers = {
@@ -105,8 +99,7 @@ def fetch_url_content(url: str, max_retries: int = 5) -> str:
             
             print(error_detail)
             if attempt < max_retries - 1 and status_code in [403, 404, 503]:
-                # NEW LOGIC: Use linear backoff with increased random jitter (5 to 10 seconds)
-                # This results in delays of 5-10s, 10-15s, 15-20s, etc., up to 30s.
+                # Use linear backoff with increased random jitter
                 sleep_time = (5 * attempt) + random.uniform(5, 10) 
                 print(f"Applying random sleep: {sleep_time:.2f} seconds.")
                 time.sleep(sleep_time) 
@@ -133,7 +126,7 @@ def fetch_url_content(url: str, max_retries: int = 5) -> str:
 def extract_text_from_html(html_content: str) -> str:
     """
     Uses BeautifulSoup to parse HTML and extract the main, readable text, 
-    stripping out scripts, styles, and extra whitespace.
+    stripping out scripts, styles, and other whitespace.
     """
     soup = BeautifulSoup(html_content, 'html.parser')
     
@@ -161,6 +154,15 @@ def read_root():
     return {"message": "Cover Letter Generator Service is Running. POST to /generate."}
 
 
+@app.options("/generate")
+async def options_generate():
+    """
+    NEW: Explicit OPTIONS handler to ensure CORS preflight checks pass with a 200 OK.
+    This prevents Pydantic validation errors (400) on the empty OPTIONS request body.
+    """
+    return {"message": "CORS preflight successful."}
+
+
 @app.post("/generate")
 async def generate_cover_letter(request: GenerationRequest):
     """
@@ -174,7 +176,7 @@ async def generate_cover_letter(request: GenerationRequest):
         
         # New validation check: ensure either URL or text is provided for JD
         if not request.job_description_url and not request.job_description_text:
-             raise HTTPException(status_code=400, detail="Must provide either a Job Description URL or the job description text.")
+             raise HTTPException(status_code=400, detail="Must provide either a Job Description URL or paste the job description text.")
 
 
         # 1. Fetch Resume Content - NOW RUN IN THREADPOOL
