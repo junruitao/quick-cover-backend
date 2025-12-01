@@ -1,6 +1,7 @@
 import os
 import time
 import re
+import io
 import random
 import logging
 from fastapi import FastAPI, HTTPException
@@ -9,6 +10,8 @@ from pydantic import BaseModel, Field
 from bs4 import BeautifulSoup
 from starlette.concurrency import run_in_threadpool 
 from typing import Optional 
+from pypdf import PdfReader
+from docx import Document
 
 # Import necessary Gemini components
 from google import genai
@@ -77,6 +80,7 @@ def fetch_url_content(url: str, max_retries: int = 5) -> str:
     if gdrive_match:
         file_id = gdrive_match.group(1)
         original_url = url
+        # The original URL is kept to inspect the file extension later if needed.
         url = f'https://drive.google.com/uc?export=download&id={file_id}'
         logging.info(f"Google Drive link detected. Transforming '{original_url}' to direct download link: '{url}'")
     # --- End Transformation ---
@@ -103,15 +107,61 @@ def fetch_url_content(url: str, max_retries: int = 5) -> str:
             response.raise_for_status()  # Raise an exception for bad status codes (4xx or 5xx)
             
             content_type = response.headers.get('Content-Type', '').lower()
+            # Use the original URL for extension checking if it was transformed
+            url_for_extension_check = original_url if 'original_url' in locals() else url
 
-            if 'text/html' in content_type:
+            # --- Fallback for generic binary stream ---
+            # If the server sends a generic content type, try to infer the type from the URL's file extension.
+            # If that fails, inspect the file's magic numbers (the first few bytes).
+            if 'application/octet-stream' in content_type:
+                logging.warning(f"Received generic 'application/octet-stream' content type. Attempting to infer type from URL: {url_for_extension_check}")
+                if url_for_extension_check.lower().endswith('.pdf'):
+                    content_type = 'application/pdf'
+                elif url_for_extension_check.lower().endswith('.docx'):
+                    content_type = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+                # Magic number check as a more robust fallback
+                elif response.content.startswith(b'%PDF'):
+                    logging.info("Inferred PDF from file signature.")
+                    content_type = 'application/pdf'
+                elif response.content.startswith(b'PK\x03\x04'): # ZIP file signature, common for DOCX
+                    logging.info("Inferred DOCX from file signature (ZIP header).")
+                    content_type = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+
+            
+            # --- Content Type Handling ---
+            if 'application/pdf' in content_type:
+                logging.info(f"Successfully fetched PDF content from {url}. Extracting text.")
+                try:
+                    pdf_file = io.BytesIO(response.content)
+                    reader = PdfReader(pdf_file)
+                    text = "".join(page.extract_text() or "" for page in reader.pages)
+                    return text
+                except Exception as e:
+                    logging.error(f"Failed to parse PDF from {url}. Error: {e}")
+                    raise HTTPException(status_code=500, detail=f"Could not parse the PDF file from the URL. Error: {e}")
+            
+            elif 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' in content_type:
+                logging.info(f"Successfully fetched DOCX content from {url}. Extracting text.")
+                try:
+                    docx_file = io.BytesIO(response.content)
+                    doc = Document(docx_file)
+                    text = "\n".join(para.text for para in doc.paragraphs)
+                    return text
+                except Exception as e:
+                    logging.error(f"Failed to parse DOCX from {url}. Error: {e}")
+                    raise HTTPException(status_code=500, detail=f"Could not parse the DOCX file from the URL. Error: {e}")
+            
+            elif 'text/html' in content_type:
                 logging.info(f"Successfully fetched HTML content from {url}. Extracting text.")
-                # Use BeautifulSoup to clean and extract readable text from HTML
                 return extract_text_from_html(response.text)
             
-            # For other text-based files, return the content
-            logging.info(f"Successfully fetched non-HTML content (Content-Type: {content_type}) from {url}.")
-            return response.text
+            elif 'text/' in content_type:
+                logging.info(f"Successfully fetched plain text content (Content-Type: {content_type}) from {url}.")
+                return response.text
+            
+            else:
+                logging.warning(f"Unsupported content type '{content_type}' at {url}. Cannot extract text.")
+                raise HTTPException(status_code=400, detail=f"Unsupported content type: {content_type}. Please provide a URL to a text, HTML, PDF, or DOCX file.")
 
         except HTTPError as http_err:
             status_code = response.status_code if 'response' in locals() else 500

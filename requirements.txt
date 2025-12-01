@@ -5,3 +5,5 @@ cloudscraper
 requests
 beautifulsoup4
 pydantic
+pypdf
+python-docx
