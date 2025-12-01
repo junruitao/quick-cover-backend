@@ -215,14 +215,14 @@ async def generate_cover_letter(request: GenerationRequest):
         1. The cover letter must be professional and highly customized.
         2. The word count must be approximately {request.word_count} words.
         3. The tone should be enthusiastic and confident.
-        4. Start with a standard business salutation (e.g., "Dear Hiring Manager,").
+        4. You must only mention skills and experiences that are explicitly present in the provided resume
         
         --- INPUT DATA ---
         
         [JOB DESCRIPTION]
         {job_description_content}
         
-        [RESUME SUMMARY (Key Skills/Experience)]
+        [RESUME]
         {resume_content}
         """
 
