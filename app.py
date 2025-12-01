@@ -118,10 +118,6 @@ def fetch_url_content(url: str, max_retries: int = 5) -> str:
             else:
                 raise HTTPException(status_code=400, detail=f"Failed to connect to URL: {url} after {max_retries} attempts. Error: {e}")
 
-    
-    # This line should ideally not be reached
-    raise HTTPException(status_code=400, detail=f"Failed to fetch content from URL after {max_retries} attempts: {url}")
-
 
 def extract_text_from_html(html_content: str) -> str:
     """
@@ -185,6 +181,9 @@ async def generate_cover_letter(request: GenerationRequest):
             resume_content = await run_in_threadpool(fetch_url_content, request.resume_url)
         except HTTPException as e:
             raise HTTPException(status_code=400, detail=f"Resume URL Error: {e.detail}")
+        
+        if not resume_content:
+            raise HTTPException(status_code=400, detail="Resume content is empty after attempting to fetch from URL. The URL may be inaccessible or the content is empty.")
 
         # 2. Get Job Description Content
         job_description_content = request.job_description_text
