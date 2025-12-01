@@ -1,6 +1,8 @@
 import os
 import time
-import random 
+import re
+import random
+import logging
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -15,6 +17,9 @@ from google.genai import types
 # Import cloudscraper instead of requests for robust fetching
 import cloudscraper
 from requests.exceptions import RequestException, HTTPError
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # --- Configuration and Initialization ---
 
@@ -66,6 +71,19 @@ def fetch_url_content(url: str, max_retries: int = 5) -> str:
     """
     Robustly fetches content from a given URL using cloudscraper to bypass anti-bot protection.
     """
+    # --- Google Drive Link Transformation ---
+    # Check if the URL is a Google Drive share link and transform it into a direct download link.
+    gdrive_match = re.search(r'drive\.google\.com/file/d/([a-zA-Z0-9_-]+)', url)
+    if gdrive_match:
+        file_id = gdrive_match.group(1)
+        original_url = url
+        url = f'https://drive.google.com/uc?export=download&id={file_id}'
+        logging.info(f"Google Drive link detected. Transforming '{original_url}' to direct download link: '{url}'")
+    # --- End Transformation ---
+
+
+    logging.info(f"Attempting to fetch content from URL: {url}")
+
     # Define a robust, common User-Agent to help bypass bot detection
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
@@ -87,35 +105,39 @@ def fetch_url_content(url: str, max_retries: int = 5) -> str:
             content_type = response.headers.get('Content-Type', '').lower()
 
             if 'text/html' in content_type:
+                logging.info(f"Successfully fetched HTML content from {url}. Extracting text.")
                 # Use BeautifulSoup to clean and extract readable text from HTML
                 return extract_text_from_html(response.text)
             
             # For other text-based files, return the content
+            logging.info(f"Successfully fetched non-HTML content (Content-Type: {content_type}) from {url}.")
             return response.text
 
         except HTTPError as http_err:
             status_code = response.status_code if 'response' in locals() else 500
             error_detail = f"Request failed (Status {status_code}). Attempting retry {attempt + 1}/{max_retries}..."
             
-            print(error_detail)
+            logging.warning(f"URL: {url} - {error_detail}")
             if attempt < max_retries - 1 and status_code in [403, 404, 503]:
                 # Use linear backoff with increased random jitter
                 sleep_time = (5 * attempt) + random.uniform(5, 10) 
-                print(f"Applying random sleep: {sleep_time:.2f} seconds.")
+                logging.info(f"Applying random sleep: {sleep_time:.2f} seconds before next retry.")
                 time.sleep(sleep_time) 
             elif attempt < max_retries - 1:
                 # Retry for non-anti-bot errors too, but rely on raise_for_status logic
                  time.sleep(2 ** attempt) 
             else:
                 # If all retries fail, raise the final error
+                logging.error(f"All retries failed for URL: {url}. Last error: {error_detail}")
                 raise HTTPException(status_code=status_code, detail=f"Failed to fetch content from URL: {url} after {max_retries} attempts. Last error: {error_detail}")
 
         except RequestException as e:
             # Handle non-HTTP errors like connection issues or timeouts
-            print(f"Attempt {attempt + 1} failed for {url} due to connection error: {e}")
+            logging.warning(f"Attempt {attempt + 1} failed for {url} due to connection error: {e}")
             if attempt < max_retries - 1:
                 time.sleep(2 ** attempt) # Exponential backoff
             else:
+                logging.error(f"All retries failed for URL: {url} due to connection error: {e}")
                 raise HTTPException(status_code=400, detail=f"Failed to connect to URL: {url} after {max_retries} attempts. Error: {e}")
 
 
